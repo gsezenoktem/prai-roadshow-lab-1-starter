@@ -34,7 +34,7 @@ export CONTENT_BUILDER_AGENT_CARD_URL=http://localhost:8003/a2a/agent/.well-know
 
 echo "Starting Orchestrator Agent on port 8004..."
 pushd agents/orchestrator
-uv run adk_app.py --host 0.0.0.0 --port 8004 . &
+uv run adk_app.py --host 0.0.0.0 --port 8004 --a2a . &
 ORCHESTRATOR_PID=$!
 popd
 
