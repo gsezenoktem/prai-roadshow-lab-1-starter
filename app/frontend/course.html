@@ -33,19 +33,38 @@
     </div>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const courseData = localStorage.getItem('currentCourse');
+        document.addEventListener('DOMContentLoaded', async () => {
+            const contentContainer = document.getElementById('course-content');
+            const tocList = document.getElementById('toc-list');
+
+            // Determine course source: API file or localStorage fallback
+            const params = new URLSearchParams(window.location.search);
+            const filename = params.get('file');
+            let courseData = null;
+
+            if (filename) {
+                try {
+                    const resp = await fetch('/api/courses/' + encodeURIComponent(filename));
+                    if (resp.ok) {
+                        courseData = await resp.text();
+                    }
+                } catch (e) {
+                    console.error('Failed to fetch course:', e);
+                }
+            }
+
+            if (!courseData) {
+                courseData = localStorage.getItem('currentCourse');
+            }
+
             if (!courseData) {
                 window.location.href = '/';
                 return;
             }
-            
-            const contentContainer = document.getElementById('course-content');
-            const tocList = document.getElementById('toc-list');
-            
+
             // Render Markdown
             contentContainer.innerHTML = marked.parse(courseData);
-            
+
             // Generate TOC from h2 elements
             const headings = contentContainer.querySelectorAll('h2');
             if (headings.length === 0) {
@@ -55,13 +74,13 @@
                 headings.forEach((heading, index) => {
                     const id = 'section-' + index;
                     heading.id = id;
-                    
+
                     const li = document.createElement('li');
                     const a = document.createElement('a');
                     a.href = '#' + id;
                     a.textContent = heading.textContent;
                     a.classList.add('toc-link');
-                    
+
                     // Simple active state on click
                     a.addEventListener('click', () => {
                         document.querySelectorAll('.toc-link').forEach(l => l.classList.remove('active'));

@@ -1,13 +1,17 @@
 import logging
 import os
 import json
+import re
+from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 from httpx_sse import aconnect_sse
 
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from google.genai import types as genai_types
@@ -17,6 +21,26 @@ from opentelemetry.sdk.trace import TracerProvider, export
 from pydantic import BaseModel
 
 from authenticated_httpx import create_authenticated_client
+
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+def save_course_content(content: str, user_id: str) -> str:
+    """Save generated course content as a markdown file. Returns the file path."""
+    # Extract title from first markdown heading, if present
+    title_match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
+    if title_match:
+        slug = re.sub(r"[^\w]+", "_", title_match.group(1).strip().lower()).strip("_")[:60]
+    else:
+        slug = "course"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_{slug}.md"
+    filepath = os.path.join(OUTPUT_DIR, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+    return filepath
+
 
 class Feedback(BaseModel):
     score: float
@@ -193,10 +217,65 @@ async def chat_stream(request: SimpleChatRequest):
                 for part in content.parts: # type: ignore
                     if part.text:
                         final_text += part.text
-        # Send final result
-        yield json.dumps({"type": "result", "text": final_text.strip()}) + "\n"
+        # Save course content to file
+        stripped = final_text.strip()
+        saved_filename = None
+        if stripped:
+            filepath = save_course_content(stripped, request.user_id)
+            saved_filename = os.path.basename(filepath)
+            logger.info("Course content saved to %s", filepath)
+        # Send final result with filename for direct linking
+        result = {"type": "result", "text": stripped}
+        if saved_filename:
+            result["filename"] = saved_filename
+        yield json.dumps(result) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
+@app.get("/api/courses")
+async def list_courses():
+    """Return saved courses sorted by most recent first."""
+    courses = []
+    output_path = Path(OUTPUT_DIR)
+    for filepath in sorted(output_path.glob("*.md"), reverse=True):
+        # Read first line to extract the title
+        with open(filepath, encoding="utf-8") as f:
+            first_line = ""
+            for line in f:
+                line = line.strip()
+                if line:
+                    first_line = line
+                    break
+        title = re.sub(r"^#+\s*", "", first_line) if first_line else filepath.stem
+        # Parse timestamp from filename (YYYYMMDD_HHMMSS_slug.md)
+        parts = filepath.stem.split("_", 2)
+        if len(parts) >= 2:
+            try:
+                created = datetime.strptime(f"{parts[0]}_{parts[1]}", "%Y%m%d_%H%M%S").isoformat()
+            except ValueError:
+                created = None
+        else:
+            created = None
+        courses.append({
+            "filename": filepath.name,
+            "title": title,
+            "created_at": created,
+        })
+    return courses
+
+
+@app.get("/api/courses/{filename}")
+async def get_course(filename: str):
+    """Return the markdown content of a saved course."""
+    # Prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    filepath = Path(OUTPUT_DIR) / filename
+    if not filepath.is_file():
+        raise HTTPException(status_code=404, detail="Course not found")
+    return PlainTextResponse(filepath.read_text(encoding="utf-8"))
+
 
 # Mount frontend from the copied location
 frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
